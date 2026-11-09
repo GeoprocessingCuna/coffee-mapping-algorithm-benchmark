@@ -6,7 +6,7 @@ This repository contains the processing workflows, scripts, and statistical fram
 
 The advancement of machine learning algorithms, the increasing availability of remote sensing imagery, and cloud data processing have enabled automated, large-scale crop mapping, reducing manual interpretation dependency and transforming digital image processing into a high-precision tool for spatial data governance. This study applies a systematic screening to evaluate the performance and stability of different machine learning architectures. Sentinel-2 images (year 2018) integrated with climatic, topographic, edaphic, and spectral predictors were processed within the Google Earth Engine (GEE) platform. 
 
-The methodology evaluated the **MaxEnt**, **Random Forest (RF)**, and **Support Vector Machine (SVM)** algorithms operating under three discrete sample partitions (70/30, 75/25, and 80/20) across 10 municipalities in Minas Gerais, Brazil. The final database totaled 19 non-multicollinear variables after a Pearson correlation filtering process. Under the analyzed biogeographical conditions, isothermality, NDVI, Soil Organic Carbon (SOC),pH soil, aspect, and slope were the predominant predictors across all models. 
+The methodology evaluated the **MaxEnt**, **Random Forest (RF)**, and **Support Vector Machine (SVM)** algorithms operating under three discrete sample partitions (70/30, 75/25, and 80/20) across 10 municipalities in Minas Gerais, Brazil. The final database totaled 19 non-multicollinear variables after a Pearson correlation filtering process at 0.7. Under the analyzed biogeographical conditions, isothermality, NDVI, Soil Organic Carbon (SOC), soil pH, aspect, and slope were the predominant predictors across all models. 
 
 The applied methodology demonstrated robust performance, achieving Area Under the Curve (AUC) values up to **0.974**, Kappa index (κ) up to **0.880**, and Overall Accuracy up to **0.964**, fluctuating as a function of sample partitioning and geographical territory. The MaxEnt algorithm achieved the highest potential performance in AUC and tolerance to sparse data, whereas Random Forest consolidated itself as the most stable classifier against sample size variations. A localized, decentralized threshold adjustment per municipality eliminated scale distortions, achieving a coefficient of determination (R²) of **0.9993** against official agricultural statistics. These developments confirm that decentralized spatial modeling is significantly more reliable than standardized global workflows, providing the scientific rigor required for international agricultural compliance.
 
@@ -26,7 +26,7 @@ The applied methodology demonstrated robust performance, achieving Area Under th
 
 After applying a strict Pearson correlation filter to eliminate multicollinearity, the multi-source database was optimized to 19 variables. The most dominant predictors across all modeling pipelines include:
 *   **Spectral:** Normalized Difference Vegetation Index (NDVI) derived from Sentinel-2 (2018).
-*   **Edaphic:** Soil Organic Carbon (SOC) and pH soil distribution magnitudes.
+*   **Edaphic:** Soil Organic Carbon (SOC) and soil pH distribution magnitudes.
 *   **Climatic:** Isothermality metrics.
 *   **Topographic:** Slope and Aspect (terrain orientation).
 
@@ -41,13 +41,17 @@ To replicate this decentralized workflow, you will need access to:
 ### Execution Steps
 
 1.  **Cloud Data Extraction:** Copy the script inside `scripts_gee/image_extraction.js` into the GEE Code Editor to process the 2018 Sentinel-2 collection and extract variables across the 10 target municipalities in Minas Gerais.
-2.  **Multicollinearity Filtering:** Run `scripts_r/pearson_filter.R` to process your raw data table and filter spatial variance factors.
+2.  **Multicollinearity Filtering:** Run `scripts_r/pearson_filter.R` to process your raw data table and filter spatial variance factors at the 0.7 Pearson threshold.
 3.  **Model Benchmarking:** Execute `scripts_r/model_evaluation.R` to train MaxEnt, RF, and SVM classifiers under the discrete 70/30, 75/25, and 80/20 data partitions.
 
-## 🎓 Authors & Affiliations
+## 🎓 Author & Affiliation
 
 *   **Inácio Samuel Cuna** (Corresponding Author) - *Department of Agricultural Engineering, Federal University of Lavras (UFLA)* | *Instituto de Investigação Agrária de Moçambique (IIAM)*
 
 ## 📄 License
 
 This project is licensed for academic and scientific reproducibility purposes.
+
+## 🤝 Acknowledgments
+
+This operational code and workflow support a broader scientific research paper. Special thanks to my advisor **Prof. Marcelo de Carvalho Alves** (UFLA) for providing the foundational dataset and guidance.
