@@ -1,0 +1,112 @@
+/**
+ * ============================================================================
+ * Script: model_maxent_setup.js
+ * Description: Maximum Entropy (MaxEnt) Processing & Validation Engine. 
+ *              Executes a single standalone spatial simulation (70/30 split), 
+ *              computes the exact error matrix via the optimized threshold, 
+ *              estimates target coffee area in Hectares (ha), and exports 
+ *              the final publication-grade verification spreadsheet.
+ * Framework: Google Earth Engine (GEE) JavaScript API
+ * Author: Inácio Samuel Cuna | UFV
+ * ============================================================================
+ */
+
+// ----------------------------------------------------------------------------
+// 1. DATA PARTITION CONFIGURATION (SINGLE STANDALONE RUN - 70/30 SPLIT)
+// ----------------------------------------------------------------------------
+var finalFrac = 0.7; // Fixed baseline 70% training and 30% validation partition
+
+var finalTreino = dadosParaMaxent.filter(ee.Filter.lte('random', finalFrac));
+var finalValid  = dadosParaMaxent.filter(ee.Filter.gt('random', finalFrac));
+
+// Train the Standalone Maximum Entropy Classifier Model
+var finalModel = ee.Classifier.amnhMaxent().train({
+  features: finalTreino,
+  classProperty: 'presenca',
+  inputProperties: bands
+});
+
+// Classify the Spatial Validation Feature Collection
+var finalPred = finalValid.classify(finalModel);
+var finalValidation = getValidationFeatures(finalPred);
+
+// ----------------------------------------------------------------------------
+// 2. COMPUTE SPATIAL PROBABILITY & TARGET CROP COGNITIVE AREA (HECTARES)
+// ----------------------------------------------------------------------------
+var finalAUCdict = computeAUC(finalValidation);
+var finalAUC = ee.Number(finalAUCdict.get('AUC'));
+var finalThreshold = ee.Number(finalAUCdict.get('threshold'));
+
+// Generate Spatial Maps on Canvas Layout
+var classifiedMap = predictors.classify(finalModel).select('probability').clip(area);
+var binaryMap = classifiedMap.gte(finalThreshold).rename('presence_binary');
+
+Map.centerObject(area, 12);
+Map.addLayer(classifiedMap, {min:0, max:1, palette:['white','blue','green','yellow','red']}, 'Probability Map (MaxEnt)');
+
+// Dynamic Pixel Reduction to Calculate Area Extent in Hectares (ha)
+var areaHa = binaryMap.multiply(ee.Image.pixelArea()).divide(10000)
+  .reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: area.geometry(),
+    scale: 10,
+    maxPixels: 1e13
+  });
+
+var area_ha = ee.Number(areaHa.get('presence_binary'));
+print('Estimated Coffee Area Extent (Hectares):', area_ha);
+
+// ----------------------------------------------------------------------------
+// 3. MULTI-CRITERIA CONFUSION MATRIX ACCOUNTING
+// ----------------------------------------------------------------------------
+var prediction = finalValidation.map(function(f){
+  return f.set('pred', ee.Number(f.get('probability')).gte(finalThreshold).int());
+});
+
+// Calculate exact True Positives, False Positives, True Negatives, and False Negatives
+var TP = prediction.filter(ee.Filter.and(ee.Filter.eq('pred',1), ee.Filter.eq('presenca',1))).size();
+var FP = prediction.filter(ee.Filter.and(ee.Filter.eq('pred',1), ee.Filter.eq('presenca',0))).size();
+var TN = prediction.filter(ee.Filter.and(ee.Filter.eq('pred',0), ee.Filter.eq('presenca',0))).size();
+var FN = prediction.filter(ee.Filter.and(ee.Filter.eq('pred',0), ee.Filter.eq('presenca',1))).size();
+var total = TP.add(TN).add(FP).add(FN);
+
+// Mathematical Formulation of Spatial Validation Accuracy Indices
+var sensitivity = TP.divide(TP.add(FN));     
+var specificity = TN.divide(TN.add(FP));
+var accuracy    = TP.add(TN).divide(total);
+var tss         = sensitivity.add(specificity).subtract(1);
+
+var pe = TP.add(FN).divide(total).multiply(TP.add(FP).divide(total))
+  .add(TN.add(FP).divide(total).multiply(TN.add(FN).divide(total)));
+var kappa = accuracy.subtract(pe).divide(ee.Number(1).subtract(pe));
+
+print("====== STANDALONE MODEL PERFORMANCE ======");
+print("Confusion Matrix Element Layout:", { TP: TP, FP: FP, TN: TN, FN: FN });
+print("Accuracy Scores and Thresholds:", { AUC: finalAUC, Threshold: finalThreshold, Sensitivity: sensitivity, Specificity: specificity, Accuracy: accuracy, TSS: tss, Kappa: kappa });
+
+// ----------------------------------------------------------------------------
+// 4. DEPLOY FINAL VERIFIED PERFORMANCE SPREADSHEET TO GOOGLE DRIVE
+// ----------------------------------------------------------------------------
+var finalMetricsSummary = ee.FeatureCollection([
+  ee.Feature(null, {
+    'accuracy': accuracy,
+    'AUC': finalAUC,
+    'Kappa': kappa,
+    'sensitivity': sensitivity,
+    'specificity': specificity,
+    'omission_rate': ee.Number(FN).divide(TP.add(FN)),
+    'threshold_used': finalThreshold,
+    'area_ha': area_ha,
+    'satelite': 'Sentinel-2'
+  })
+]);
+
+Export.table.toDrive({
+  collection: finalMetricsSummary,
+  description: 'MaxEnt_FinalMetrics_all_Itumirim70',
+  folder: 'maxent',
+  fileNamePrefix: 'MaxEnt_FinalMetrics_all_Itumirim70',
+  fileFormat: 'CSV'
+});
+
+print("[SUCCESS] Standalone MaxEnt mathematical extraction and spreadsheet deployment complete.");
