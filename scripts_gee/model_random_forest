@@ -1,0 +1,181 @@
+/**
+ * ============================================================================
+ * PROJECT: COFFEE SPATIAL MAPPING & MACHINE LEARNING MODELING
+ * STEP 03: Random Forest (RF) Multi-Partition Classification Core Engine
+ * MODE: Output Mode Probability Assessment with Dynamic Area Allocation
+ * AUTHOR: Inácio Samuel Cuna | UFV
+ * REPOSITORY: @GeoprocessingCuna
+ * ============================================================================
+ */
+
+// --- 1) USER IDENTITY AND INITIALIZATION LAYER ------------------------------
+var particoesAmostrais = ee.List([0.70, 0.75, 0.80]);
+var pixelArea = ee.Image.pixelArea();
+
+// DEFINE O NOME DO MUNICÍPIO ATIVO (Mude apenas esta string por asset municipal)
+var nomeMunicipioAtivo = "Itumirim"; 
+
+// ============================================================================
+// LOOP 1: EXTRAÇÃO DAS 10 MÉTRICAS DE VALIDAÇÃO CRUZADA VIA RANDOM FOREST
+// ============================================================================
+var logsRandomForest = particoesAmostrais.map(function(limiteTreino) {
+  limiteTreino = ee.Number(limiteTreino);
+  
+  var treinoFC = dadosParaMaxent.filter(ee.Filter.lte('random', limiteTreino));
+  var testeFC = dadosParaMaxent.filter(ee.Filter.gt('random', limiteTreino));
+  
+  var classificadorRF = ee.Classifier.smileRandomForest({
+    numberOfTrees: 150,
+    variablesPerSplit: 3, 
+    minLeafPopulation: 1,
+    bagFraction: 0.5,
+    seed: 123
+  }).setOutputMode('PROBABILITY');
+
+  var modeloTreinado = classificadorRF.train({
+    features: treinoFC,
+    classProperty: 'presenca',
+    inputProperties: bands
+  });
+  
+  var testeClassificado = testeFC.classify(modeloTreinado)
+    .map(function(f) {
+      return f.set('probability', f.get('classification'));
+    });
+  
+  var metricasROC = computeAUC(testeClassificado);
+  var thresholdFinal = ee.Number(metricasROC.get('threshold'));
+  var aucFinal = ee.Number(metricasROC.get('AUC'));
+  
+  var preditoFC = testeClassificado.map(function(f) {
+    var prob = ee.Number(f.get('probability'));
+    return f.set('pred', prob.gte(thresholdFinal).int());
+  });
+  
+  var TP = ee.Number(preditoFC.filter(ee.Filter.and(ee.Filter.eq('pred',1), ee.Filter.eq('presenca',1))).size());
+  var FP = ee.Number(preditoFC.filter(ee.Filter.and(ee.Filter.eq('pred',1), ee.Filter.eq('presenca',0))).size());
+  var TN = ee.Number(preditoFC.filter(ee.Filter.and(ee.Filter.eq('pred',0), ee.Filter.eq('presenca',0))).size());
+  var FN = ee.Number(preditoFC.filter(ee.Filter.and(ee.Filter.eq('pred',0), ee.Filter.eq('presenca',1))).size());
+  
+  // === CÁLCULO DAS MÉTRICAS DISCRETAS ===
+  var totalAmostras = TP.add(FP).add(TN).add(FN).max(1);
+  var sensitivity = TP.divide(TP.add(FN).max(1));
+  var specificity = TN.divide(TN.add(FP).max(1));
+  var accuracy = TP.add(TN).divide(totalAmostras);
+  var omissionRateFinal = FN.divide(TP.add(FN).max(1));
+  var tss = sensitivity.add(specificity).subtract(1);
+  
+  var po = accuracy;
+  var pePresenca = TP.add(FN).divide(totalAmostras).multiply(TP.add(FP).divide(totalAmostras));
+  var peAusencia = TN.add(FP).divide(totalAmostras).multiply(TN.add(FN).divide(totalAmostras));
+  var pe = pePresenca.add(peAusencia);
+  var kappa = po.subtract(pe).divide(ee.Number(1).subtract(pe).max(0.001));
+  
+  var mapaInstancia = predictors.classify(modeloTreinado).select('classification');
+  var aptidaoBinaria = mapaInstancia.gte(thresholdFinal).clip(area);
+  
+  var areaHaFinal = ee.Number(pixelArea.updateMask(aptidaoBinaria)
+    .reduceRegion({reducer: ee.Reducer.sum(), geometry: area.geometry(), scale: 10, maxPixels: 1e9})
+    .get('area')).divide(10000);
+    
+  var areaKm2Final = areaHaFinal.divide(100);
+  
+  var proporcaoTexto = ee.String(limiteTreino.multiply(100).format('%.0f'))
+    .cat('/')
+    .cat(ee.Number(100).subtract(limiteTreino.multiply(100)).format('%.0f'));
+
+  return ee.Feature(null, {
+    'municipio': nomeMunicipioAtivo,
+    'particao': proporcaoTexto,
+    'train_frac': limiteTreino,
+    'AUC': aucFinal,
+    'Kappa': kappa,
+    'TSS': tss,
+    'accuracy': accuracy,
+    'sensitivity': sensitivity,
+    'specificity': specificity,
+    'omission_rate': omissionRateFinal,
+    'threshold_used': thresholdFinal,
+    'area_ha': areaHaFinal,
+    'area_km2': areaKm2Final,
+    'satelite': 'Sentinel_2'
+  });
+});
+
+// ============================================================================
+// LOOP 2: EXTRAÇÃO ISOLADA DA IMPORTÂNCIA GINI (VETORIZAÇÃO PURA)
+// ============================================================================
+var logsImportancia = particoesAmostrais.map(function(limiteTreino) {
+  limiteTreino = ee.Number(limiteTreino);
+  var treinoFC = dadosParaMaxent.filter(ee.Filter.lte('random', limiteTreino));
+  
+  var classificadorRF = ee.Classifier.smileRandomForest({
+    numberOfTrees: 150, variablesPerSplit: 3, minLeafPopulation: 1, bagFraction: 0.5, seed: 123
+  }).setOutputMode('PROBABILITY');
+
+  var modeloTreinado = classificadorRF.train({features: treinoFC, classProperty: 'presenca', inputProperties: bands});
+  var importanciaDict = ee.Dictionary(modeloTreinado.explain().get('importance'));
+  
+  var proporcaoTexto = ee.String(limiteTreino.multiply(100).format('%.0f'))
+    .cat('/')
+    .cat(ee.Number(100).subtract(limiteTreino.multiply(100)).format('%.0f'));
+    
+  return ee.Feature(null, importanciaDict)
+    .set({'municipio': nomeMunicipioAtivo, 'particao': proporcaoTexto});
+});
+
+var tabelaRF = ee.FeatureCollection(logsRandomForest);
+var tabelaImportanciaMestre = ee.FeatureCollection(logsImportancia);
+
+print("🔬 RESULTADOS MULTI-PARTIÇÃO RANDOM FOREST:", tabelaRF);
+print("📊 IMPORTÂNCIA DE VARIÁVEIS POR PARTIÇÃO:", tabelaImportanciaMestre);
+
+// ============================================================================
+// GATILHOS DE EXPORTAÇÃO AUTOMATIZADA EM LOTE (MÉTRICAS + IMPORTÂNCIA)
+// ============================================================================
+var exportarDadosRF = function(fraçãoStr, sufixo) {
+  var metricasFiltradas = tabelaRF.filter(ee.Filter.eq('particao', fraçãoStr));
+  Export.table.toDrive({
+    collection: metricasFiltradas,
+    description: 'RF_FinalMetrics_all_' + nomeMunicipioAtivo + sufixo,
+    fileFormat: 'CSV',
+    selectors: ['municipio', 'particao', 'train_frac', 'AUC', 'Kappa', 'TSS', 'accuracy', 
+                'sensitivity', 'specificity', 'omission_rate', 'threshold_used', 'area_ha', 'area_km2', 'satelite']
+  });
+  
+  var importanciaFiltrada = tabelaImportanciaMestre.filter(ee.Filter.eq('particao', fraçãoStr));
+  Export.table.toDrive({
+    collection: importanciaFiltrada,
+    description: 'RF_VarImportance_all_' + nomeMunicipioAtivo + sufixo,
+    fileFormat: 'CSV',
+    selectors: ['municipio', 'particao', 'bio14', 'bio17','bio06','bio12','bio15','elevation', 'aspect', 'slope', 
+                'NDVI','AVI','MCARI','SOC', 'pH']
+  });
+};
+
+exportarDadosRF("70/30", "70");
+exportarDadosRF("75/25", "75");
+exportarDadosRF("80/20", "80");
+
+// ============================================================================
+// GATILHO DE EXPORTAÇÃO DO MAPA RASTER DE PROBABILIDADES POR RANDOM FOREST
+// ============================================================================
+var modeloDefinitivoRF = ee.Classifier.smileRandomForest({
+  numberOfTrees: 150, variablesPerSplit: 3, minLeafPopulation: 1, bagFraction: 0.5, seed: 123
+}).setOutputMode('PROBABILITY').train({
+  features: dadosParaMaxent.filter(ee.Filter.lte('random', 0.70)), classProperty: 'presenca', inputProperties: bands
+});
+
+var mapaProbabilidadeRF = predictors.classify(modeloDefinitivoRF).select('classification').clip(area);
+
+Export.image.toDrive({
+  image: mapaProbabilidadeRF,
+  description: 'RF_ProbabilityMap_70_30_' + nomeMunicipioAtivo,
+  folder: 'RF_Coffee_Outputs',
+  scale: 10,
+  region: area.geometry().bounds(),
+  maxPixels: 1e9,
+  fileFormat: 'GeoTIFF'
+});
+
+print("➔ [GATILHO] Processamento finalizado sem erros de cliente/servidor!");
